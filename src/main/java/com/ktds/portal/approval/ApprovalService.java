@@ -26,6 +26,10 @@ import java.util.List;
  * 10. Comment Smell        : 나쁜 이름을 주석으로 변명한다.
  * 11. No Tests             : 테스트가 단 한 개도 없다(안전망 부재).
  * =================================================================================
+ *
+ * [리팩토링 진행] status(0/1/2/3/9)는 ApprovalStatus enum으로 전환 완료(docs/4-11 BL-4).
+ *                 DB엔 ApprovalStatusConverter가 정수 그대로 저장. type/priority/role/action은
+ *                 아직 int로 남아있다(다음 대상).
  */
 @Service
 public class ApprovalService {
@@ -50,7 +54,7 @@ public class ApprovalService {
         d.setContent(content);
         d.setType(type);
         d.setPriority(urgent ? 3 : priority);   // priority(우선순위): 1 낮음·2 보통·3 높음  [스멜3: 3=높음, 왜 3이 높음? 코드만 봐선 모름]
-        d.setStatus(0);                          // status(상태): 0 임시저장·1 상신·2 승인·3 반려·9 취소  [스멜3: 0=임시저장, DRAFT 대신 숫자 0]
+        d.setStatus(ApprovalStatus.DRAFT);       // [리팩토링] 0 → ApprovalStatus.DRAFT (DB엔 여전히 0 저장)
         d.setDrafterId(drafterId);
         d.setApproverId(approverId);
         d.setAmount(amount);
@@ -83,18 +87,18 @@ public class ApprovalService {
             return;
         }
 
-        int s = d.getStatus();     // s = status(상태): 0 임시저장·1 상신·2 승인·3 반려·9 취소  [스멜9: 한 글자라 의미 불명]
+        ApprovalStatus s = d.getStatus();  // [리팩토링] int → ApprovalStatus. s = status(상태)  [스멜9: 한 글자라 의미 불명]
         int proc = action;          // proc = action(처리 구분): 1 상신·2 승인·3 반려·9 취소  [스멜9: action 을 다른 약어로 또 담음, 의미 없음]
 
         // [스멜2][스멜3] 거대한 if-지옥. 상태 전이 규칙이 숫자 비교로 흩어져 있다.
         if (proc == 1) {            // proc==1 → 상신 (숫자 1을 외워야 의미를 앎)
             // 상신: 임시저장(0)일 때만 가능
-            if (s == 0) {           // s==0 → 임시저장 상태일 때만
+            if (s == ApprovalStatus.DRAFT) {   // 임시저장 상태일 때만
                 // [스멜6] 금액 기준 결재자 자동 상향 — 도메인 규칙이 서비스에 박혀 있다.
                 if (d.getType() == 1 && d.getAmount() >= 1000000) {   // type 1=지출·2=휴가·3=구매·4=기타 → type==1(지출) && 100만원↑
                     d.setPriority(3);   // 3 = 높음
                 }
-                d.setStatus(1);   // 1 = 상신 (SUBMITTED)
+                d.setStatus(ApprovalStatus.SUBMITTED);
                 d.setUpdatedAt(LocalDateTime.now());
                 repo.save(d);
                 // [스멜4] 메일 발송 — 본문 생성 로직이 곳곳에 복붙.
@@ -109,10 +113,10 @@ public class ApprovalService {
             }
         } else if (proc == 2) {     // proc==2 → 승인
             // 승인: 상신(1) 상태 + 본인이 결재자 + 권한(role>=2) 일 때만
-            if (s == 1) {           // s==1 → 상신 상태일 때만 승인 가능
+            if (s == ApprovalStatus.SUBMITTED) {   // 상신 상태일 때만 승인 가능
                 if (d.getApproverId() != null && d.getApproverId().equals(userId)) {
                     if (u.getRole() >= 2) {   // role 1=사원·2=팀장·3=임원 (role>=2 승인권한)  [스멜3: 숫자로 권한 판정]
-                        d.setStatus(2);        // 2 = 승인 (APPROVED)
+                        d.setStatus(ApprovalStatus.APPROVED);
                         d.setUpdatedAt(LocalDateTime.now());
                         repo.save(d);
                         // [스멜4] 또 복붙된 메일 발송
@@ -128,10 +132,10 @@ public class ApprovalService {
             }
         } else if (proc == 3) {     // proc==3 → 반려
             // 반려
-            if (s == 1) {           // s==1 → 상신 상태만 반려 가능
+            if (s == ApprovalStatus.SUBMITTED) {   // 상신 상태만 반려 가능
                 if (d.getApproverId() != null && d.getApproverId().equals(userId)) {
                     if (u.getRole() >= 2) {   // role>=2 → 팀장 이상 (위 승인 분기와 똑같은 판정 복붙)
-                        d.setStatus(3);          // 3 = 반려 (REJECTED)
+                        d.setStatus(ApprovalStatus.REJECTED);
                         d.setRejectReason(reason);
                         d.setUpdatedAt(LocalDateTime.now());
                         repo.save(d);
@@ -148,9 +152,9 @@ public class ApprovalService {
             }
         } else if (proc == 9) {     // proc==9 → 취소 (왜 9? 4~8 은 비워둔 규칙 없는 번호)
             // 취소: 기안자 본인 + 아직 승인 전(0 또는 1)
-            if (s == 0 || s == 1) {     // s==0(임시저장) 또는 s==1(상신)일 때만
+            if (s == ApprovalStatus.DRAFT || s == ApprovalStatus.SUBMITTED) {  // 임시저장 또는 상신일 때만
                 if (d.getDrafterId() != null && d.getDrafterId().equals(userId)) {
-                    d.setStatus(9);   // 9 = 취소 (CANCELED)
+                    d.setStatus(ApprovalStatus.CANCELED);
                     d.setUpdatedAt(LocalDateTime.now());
                     repo.save(d);
                     writeAudit("APPROVAL CANCEL", d.getId(), userId);
@@ -167,14 +171,14 @@ public class ApprovalService {
 
     // [스멜1][스멜10] 화면 표시용 문자열까지 서비스가 만든다. 주석으로 매직넘버를 변명한다.
     public String statusLabel(Approval d) {
-        int s = d.getStatus();   // s = status(상태): 0 임시저장·1 상신·2 승인·3 반려·9 취소
+        ApprovalStatus s = d.getStatus();  // [리팩토링] int → ApprovalStatus
         String tmp;          // tmp = 결과 라벨(반환할 상태 표시 문자열)  [스멜9: 임시? 의도가 안 드러남]
-        if (s == 0) tmp = "임시저장";       // status 0~9 를 라벨로 번역 — 이 표가 곳곳에 중복
-        else if (s == 1) tmp = "상신";
-        else if (s == 2) tmp = "승인";
-        else if (s == 3) tmp = "반려";
-        else if (s == 9) tmp = "취소";
-        else tmp = "알수없음";              // enum 이면 컴파일러가 막아줄 분기
+        if (s == ApprovalStatus.DRAFT) tmp = "임시저장";       // 상태를 라벨로 번역 — 이 표가 곳곳에 중복
+        else if (s == ApprovalStatus.SUBMITTED) tmp = "상신";
+        else if (s == ApprovalStatus.APPROVED) tmp = "승인";
+        else if (s == ApprovalStatus.REJECTED) tmp = "반려";
+        else if (s == ApprovalStatus.CANCELED) tmp = "취소";
+        else tmp = "알수없음";              // enum 전환 후엔 이론상 도달 불가 — 방어적으로 유지(동작 변경 금지)
         return tmp;
     }
 

@@ -2,6 +2,8 @@ package com.ktds.portal.approval;
 
 import com.ktds.portal.user.User;
 import com.ktds.portal.user.UserRepository;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.PersistenceContext;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -17,8 +19,10 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
  * 목적은 옳고 그름의 판단이 아니라 "레거시가 지금 이렇게 동작한다"는 사실 고정이다(CLAUDE.md 원칙).
  * 리팩토링 전/후 이 6개 테스트가 변경 없이 그대로 green이어야 리팩토링이 안전하게 끝난 것이다.
  *
- * status 관찰값: 0=임시저장 1=상신 2=승인 3=반려 9=취소 (현재 코드의 매직넘버 그대로 사용 — enum 미도입 상태)
- * action 값:     1=상신   2=승인 3=반려 9=취소
+ * status 관찰값: DRAFT(0)·SUBMITTED(1)·APPROVED(2)·REJECTED(3)·CANCELED(9)
+ *               — [리팩토링] Approval.status가 int → ApprovalStatus enum으로 바뀌면서
+ *                 단언문의 비교 대상만 리터럴 int에서 enum 상수로 맞췄다(의미·기대값은 동일, docs/4-11 BL-4).
+ * action 값:     1=상신   2=승인 3=반려 9=취소 (여전히 int — 이번 리팩토링 대상 아님)
  *
  * @DataJpaTest로 레포지토리/엔티티 슬라이스만 띄우고, ApprovalService는 이 슬라이스에 없으므로
  * @Import로 빈 등록 후 @Autowired로 주입받는다(테스트 코드에서 new ApprovalService(...) 직접 생성 금지).
@@ -36,6 +40,9 @@ class ApprovalServiceProcessApprovalCharacterizationTest {
 
     @Autowired
     private UserRepository userRepository;
+
+    @PersistenceContext
+    private EntityManager entityManager;
 
     private User 김사원_기안자;
     private User 박팀장_결재자;
@@ -59,7 +66,7 @@ class ApprovalServiceProcessApprovalCharacterizationTest {
         approvalService.processApproval(결재.getId(), 박팀장_결재자.getId(), 2, ""); // action 2=승인
 
         Approval 결과 = approvalRepository.findById(결재.getId()).orElseThrow();
-        assertThat(결과.getStatus()).isEqualTo(2); // status 2=승인(APPROVED)
+        assertThat(결과.getStatus()).isEqualTo(ApprovalStatus.APPROVED);
     }
 
     // 2) 반려
@@ -73,7 +80,7 @@ class ApprovalServiceProcessApprovalCharacterizationTest {
         approvalService.processApproval(결재.getId(), 박팀장_결재자.getId(), 3, "일정 겹침");    // action 3=반려
 
         Approval 결과 = approvalRepository.findById(결재.getId()).orElseThrow();
-        assertThat(결과.getStatus()).isEqualTo(3);              // status 3=반려(REJECTED)
+        assertThat(결과.getStatus()).isEqualTo(ApprovalStatus.REJECTED);
         assertThat(결과.getRejectReason()).isEqualTo("일정 겹침");
     }
 
@@ -87,7 +94,7 @@ class ApprovalServiceProcessApprovalCharacterizationTest {
         approvalService.processApproval(결재.getId(), 김사원_기안자.getId(), 9, ""); // action 9=취소
 
         Approval 결과 = approvalRepository.findById(결재.getId()).orElseThrow();
-        assertThat(결과.getStatus()).isEqualTo(9); // status 9=취소(CANCELED)
+        assertThat(결과.getStatus()).isEqualTo(ApprovalStatus.CANCELED);
     }
 
     // 4) 권한 없는 승인 — CLAUDE.md가 명시한 "권한 없는 승인을 조용히 무시"하는 레거시 결함을 그대로 고정
@@ -102,7 +109,7 @@ class ApprovalServiceProcessApprovalCharacterizationTest {
         approvalService.processApproval(결재.getId(), 최사원_권한없는결재자.getId(), 2, "");      // action 2=승인 시도(권한 없음)
 
         Approval 결과 = approvalRepository.findById(결재.getId()).orElseThrow();
-        assertThat(결과.getStatus()).isEqualTo(1); // 예외 없이 조용히 무시 — 여전히 1=상신(SUBMITTED)
+        assertThat(결과.getStatus()).isEqualTo(ApprovalStatus.SUBMITTED); // 예외 없이 조용히 무시 — 상태 변화 없음
     }
 
     // 5) 없는 id
@@ -128,6 +135,26 @@ class ApprovalServiceProcessApprovalCharacterizationTest {
         approvalService.processApproval(결재.getId(), 박팀장_결재자.getId(), 2, ""); // action 2=재승인 시도
 
         Approval 결과 = approvalRepository.findById(결재.getId()).orElseThrow();
-        assertThat(결과.getStatus()).isEqualTo(2); // 변화 없음 — 여전히 2=승인(APPROVED)
+        assertThat(결과.getStatus()).isEqualTo(ApprovalStatus.APPROVED); // 변화 없음
+    }
+
+    // [추가 검증] enum 리팩토링 이후에도 DB 컬럼엔 여전히 정수 코드가 그대로 저장되는지 확인
+    // (ApprovalStatusConverter가 @Enumerated 없이 fromCode/getCode로 매핑하는지 검증 — 6개 고정 시나리오와는 별개)
+    @Test
+    void DB에는_status가_여전히_정수코드로_저장된다() {
+        Approval 결재 = approvalService.create(
+                "장비 구매", "모니터", 1, 2,
+                김사원_기안자.getId(), 박팀장_결재자.getId(), 100_000L, false);
+        approvalService.processApproval(결재.getId(), 김사원_기안자.getId(), 1, ""); // action 1=상신 → SUBMITTED
+
+        entityManager.flush();
+        entityManager.clear();
+
+        Object rawStatus = entityManager
+                .createNativeQuery("select status from approval where id = ?1")
+                .setParameter(1, 결재.getId())
+                .getSingleResult();
+
+        assertThat(((Number) rawStatus).intValue()).isEqualTo(1); // DB엔 여전히 정수 1(SUBMITTED 코드) 그대로
     }
 }
