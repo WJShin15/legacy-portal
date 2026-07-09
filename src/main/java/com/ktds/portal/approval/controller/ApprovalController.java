@@ -1,5 +1,7 @@
-package com.ktds.portal.approval;
+package com.ktds.portal.approval.controller;
 
+import com.ktds.portal.approval.domain.Approval;
+import com.ktds.portal.approval.service.ApprovalService;
 import org.springframework.web.bind.annotation.*;
 import java.util.List;
 import java.util.Map;
