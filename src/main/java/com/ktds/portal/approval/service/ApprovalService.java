@@ -33,6 +33,8 @@ import java.util.List;
  * [리팩토링 진행] status(0/1/2/3/9)는 ApprovalStatus enum으로 전환 완료(docs/4-11 BL-4).
  *                 DB엔 ApprovalStatusConverter가 정수 그대로 저장. type/priority/role/action은
  *                 아직 int로 남아있다(다음 대상).
+ * [리팩토링 진행] statusLabel()/amountGrade() 는 Move Method로 각각 ApprovalStatus.label(),
+ *                 AmountGrade.of(long)로 이전하고 이 클래스에서는 제거했다(스멜6 Feature Envy 해소).
  */
 @Service
 public class ApprovalService {
@@ -172,27 +174,9 @@ public class ApprovalService {
         audit.write("[" + now + "] " + act + " id=" + id + " by=" + userId);
     }
 
-    // [스멜1][스멜10] 화면 표시용 문자열까지 서비스가 만든다. 주석으로 매직넘버를 변명한다.
-    public String statusLabel(Approval d) {
-        ApprovalStatus s = d.getStatus();  // [리팩토링] int → ApprovalStatus
-        String tmp;          // tmp = 결과 라벨(반환할 상태 표시 문자열)  [스멜9: 임시? 의도가 안 드러남]
-        if (s == ApprovalStatus.DRAFT) tmp = "임시저장";       // 상태를 라벨로 번역 — 이 표가 곳곳에 중복
-        else if (s == ApprovalStatus.SUBMITTED) tmp = "상신";
-        else if (s == ApprovalStatus.APPROVED) tmp = "승인";
-        else if (s == ApprovalStatus.REJECTED) tmp = "반려";
-        else if (s == ApprovalStatus.CANCELED) tmp = "취소";
-        else tmp = "알수없음";              // enum 전환 후엔 이론상 도달 불가 — 방어적으로 유지(동작 변경 금지)
-        return tmp;
-    }
-
-    // [스멜6] Feature Envy — Approval 데이터를 꺼내 금액 등급을 서비스가 계산.
-    public String amountGrade(Approval d) {
-        long a = d.getAmount();   // a = amount(금액, 원)  [스멜9: 한 글자 약어]
-        if (a >= 10000000) return "S";   // [스멜3] 1000만원=S — 기준 숫자의 의미가 코드에 없음
-        else if (a >= 1000000) return "A";   // 100만원=A
-        else if (a >= 100000) return "B";    // 10만원=B
-        else return "C";
-    }
+    // [리팩토링] statusLabel(Approval)/amountGrade(Approval) → Move Method로 제거됨.
+    //   화면 표시 라벨은 ApprovalStatus.label(), 금액 등급은 AmountGrade.of(long)로 이전했다
+    //   (Feature Envy 제거, docs/4-4 스멜 #6). 이 두 메서드를 부르던 곳이 없어 위임 없이 삭제한다.
 
     public List<Approval> myDrafts(Long userId) {
         return repo.findByDrafterId(userId);
